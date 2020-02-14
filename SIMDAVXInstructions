@@ -1,0 +1,187 @@
+Objective:
+---------
+we will see Performance improvement using AVX SIMD instructions on Intel X86 machine.
+Also, we will take a brief look at Assembly Instructions to see difference in instructions with and without SIMD operations.
+
+Test Program:
+------------
+The following C program is analyzed to discuss impact of SIMD instructions generated for linear operation performed in loop.
+#include<stdio.h>
+#include <time.h>
+
+long int gethrtime(void)
+{
+  struct timespec tv;
+  long int ns;
+
+  if (0 == clock_gettime(CLOCK_MONOTONIC, &tv)) {
+    ns = tv.tv_sec;
+    ns = ns * 1000 * 1000 * 1000 + tv.tv_nsec;
+    return ns;
+  }
+  return 0L;
+}
+void daxpy(size_t n, double a, const double x[], double y[])
+{
+     for (size_t i = 0; i < n; i++) {
+       y[i] = a*x[i] + y[i];
+     }
+}
+
+int main()
+{
+double x[1000],y[1000];
+double a=2.0;
+double start, end, elapsed;
+int n;
+n=1000;
+for(int i=0;i<1000;i++){
+     x[i] = i+1;
+     y[i] = i+2;
+}
+    start = gethrtime();
+    daxpy(n,a,x,y);
+    end = gethrtime();
+    elapsed = end - start;
+    printf("Time elapsed in 1000 iteration[nanosec]= %.9f\n", elapsed);
+return 0;
+}
+
+We will focus on performance of loop present in function daxpy, following loop is the so-called daxpy(Double precission x plus y). 
+The following code (y[i]=a*x[i]+y[i]) implements the DAXP operation. DAXP is a linear combination of vectors. 
+
+Test machine Information:
+-----------------------
+[root@localhost Programs]# lsb_release -a
+LSB Version:	:core-4.1-amd64:core-4.1-noarch:cxx-4.1-amd64:cxx-4.1-noarch:desktop-4.1-amd64:desktop-4.1-noarch:languages-4.1-amd64:languages-4.1-noarch:printing-4.1-amd64:printing-4.1-noarch
+Distributor ID:	CentOS
+Description:	CentOS Linux release 7.6.1810 (Core) 
+Release:	7.6.1810
+Codename:	Core
+
+[root@localhost ~]# lscpu
+Architecture:          x86_64
+CPU op-mode(s):        32-bit, 64-bit
+Byte Order:            Little Endian
+CPU(s):                1
+On-line CPU(s) list:   0
+Thread(s) per core:    1
+Core(s) per socket:    1
+Socket(s):             1
+NUMA node(s):          1
+Vendor ID:             GenuineIntel
+CPU family:            6
+Model:                 142
+Model name:            Intel(R) Core(TM) i7-7600U CPU @ 2.80GHz
+Stepping:              9
+CPU MHz:               2904.000
+BogoMIPS:              5808.00
+Hypervisor vendor:     KVM
+Virtualization type:   full
+L1d cache:             32K
+L1i cache:             32K
+L2 cache:              256K
+L3 cache:              4096K
+NUMA node0 CPU(s):     0
+
+
+Perofrmance Analysis:
+--------------------
+Execution resutls with -O0, -O3, and corei7-avx-O3:
+-O0 : 4266 ms.
+-O3 : 827 ms.
+-corei7-zvx-O3 : 463 ms.
+
+we have recorded execution time results with -O0, -O3, and corei7-avx-O3. Execution time results are best with corei7-zvx-O3 and worst with -O0.
+
+Analysis of Execution resutls with corei7-avx-O3 option:
+-------------------------------------------------------
+Let see why execution time results are best with corei7-avx-O3 option. When we specify option corei7-avx-O3 it instructs compiler to 
+generate AVX SIMD instructions wherever it is applicable. In our case expression in loop in function daxpy() qualify for SIMD instructions 
+so compiler generates SIMD instructions vmulpd, vaddpd, and vmovapd operating on %ymm registers which we can see in following snippet of .s 
+(assemble file). Vectorization of loop results in better execution time.
+
+  400770:       c4 c1 79 10 0c 01       vmovupd (%r9,%rax,1),%xmm1
+  400776:       c4 c3 75 18 4c 01 10    vinsertf128  $0x1,0x10(%r9,%rax,1),%ymm1,%ymm1
+  40077d:       01
+  40077e:       c5 f5 59 ca             vmulpd %ymm2,%ymm1,%ymm1
+  400782:       49 83 c0 01             add    $0x1,%r8
+  400786:       c5 f5 58 0c 01          vaddpd (%rcx,%rax,1),%ymm1,%ymm1
+  40078b:       c5 fd 29 0c 01          vmovapd %ymm1,(%rcx,%rax,1)
+  400790:       48 83 c0 20             add    $0x20,%rax
+  400794:       4d 39 d0                cmp    %r10,%r8
+  400797:       72 d7                   jb     400770 <daxpy+0xc0>
+  400799:       4c 89 d9                mov    %r11,%rcx
+  40079c:       48 83 e1 fc             and    $0xfffffffffffffffc,%rcx
+  4007a0:       48 8d 04 0b             lea    (%rbx,%rcx,1),%rax
+  4007a4:       49 39 cb                cmp    %rcx,%r11
+  4007a7:       0f 84 b3 00 00 00       je     400860 <daxpy+0x1b0>
+  4007ad:       48 8d 0c c2             lea    (%rdx,%rax,8),%rcx
+  4007b1:       c5 fb 59 0c c6          vmulsd (%rsi,%rax,8),%xmm0,%xmm1
+  4007b6:       c5 f3 58 09             vaddsd (%rcx),%xmm1,%xmm1
+  4007ba:       c5 fb 11 09             vmovsd %xmm1,(%rcx)
+  4007be:       48 8d 48 01             lea    0x1(%rax),%rcx
+
+Analysis of Execution resutls with -O0 Option:
+---------------------------------------------
+Let see why execution time results are maximum with -O0 option. When we specify option -O0 it instructs compiler to disable optimizations and 
+SIMD instructions are not generated. 
+In our test program, expression in loop in function daxpy() qualify for SIMD instructions but due to -O0 option compiler does not generate 
+SIMD instructions and expression in loop is executed sequentially which we can see in following snippet of .s (assemble file). 
+Sequential execution of instructions in loop results in more execution time compared to execution of vectorized loop.
+
+  4005be:       48 8b 45 f8             mov    -0x8(%rbp),%rax
+  4005c2:       48 8d 14 c5 00 00 00    lea    0x0(,%rax,8),%rdx
+  4005c9:       00
+  4005ca:       48 8b 45 d8             mov    -0x28(%rbp),%rax
+  4005ce:       48 01 d0                add    %rdx,%rax
+  4005d1:       f2 0f 10 00             movsd  (%rax),%xmm0
+  4005d5:       f2 0f 59 45 e0          mulsd  -0x20(%rbp),%xmm0
+  4005da:       48 8b 45 f8             mov    -0x8(%rbp),%rax
+  4005de:       48 8d 14 c5 00 00 00    lea    0x0(,%rax,8),%rdx
+  4005e5:       00
+  4005e6:       48 8b 45 d0             mov    -0x30(%rbp),%rax
+  4005ea:       48 01 d0                add    %rdx,%rax
+  4005ed:       f2 0f 10 08             movsd  (%rax),%xmm1
+  4005f1:       48 8b 45 f8             mov    -0x8(%rbp),%rax
+  4005f5:       48 8d 14 c5 00 00 00    lea    0x0(,%rax,8),%rdx
+  4005fc:       00
+  4005fd:       48 8b 45 d0             mov    -0x30(%rbp),%rax
+  400601:       48 01 d0                add    %rdx,%rax
+  400604:       f2 0f 58 c1             addsd  %xmm1,%xmm0
+  400608:       f2 0f 11 00             movsd  %xmm0,(%rax)
+  40060c:       48 83 45 f8 01          addq   $0x1,-0x8(%rbp)
+  400611:       48 8b 45 f8             mov    -0x8(%rbp),%rax
+  400615:       48 3b 45 e8             cmp    -0x18(%rbp),%rax
+  400619:       72 a3                   jb     4005be <daxpy+0x1f>
+
+
+Analysis of execution results with -O3 option:
+--------------------------------------------
+Let see why execution time results with -O3 option are better than -O0 but not as good as with corei7-avx-O3. 
+In case of option -O3 expression in loop in function daxpy() qualify for SIMD instructions but -O3 option SSE instructions(mulpd, addpd) 
+are generated and they use  %xmm registers which are 128 bits wide not 256 as %YMM registers as with corei7-avx-O3 option. 
+Loop is vectorized, but vectorization width is less than with option corei7-avx-O3 which results in better performance than -O0 but 
+less than corei7-avx-O3. Hence loop results in more execution time compared corei7-avx-O3 but better as compared to -O0.
+
+  400710:       66 41 0f 10 0c 02       movupd (%r10,%rax,1),%xmm1
+  400716:       49 83 c0 01             add    $0x1,%r8
+  40071a:       66 0f 59 ca             mulpd  %xmm2,%xmm1
+  40071e:       66 0f 58 0c 01          addpd  (%rcx,%rax,1),%xmm1
+  400723:       0f 29 0c 01             movaps %xmm1,(%rcx,%rax,1)
+  400727:       48 83 c0 10             add    $0x10,%rax
+  40072b:       4d 39 d8                cmp    %r11,%r8
+  40072e:       72 e0                   jb     400710 <daxpy+0x80>
+  400730:       48 89 d9                mov    %rbx,%rcx
+  400733:       48 83 e1 fe             and    $0xfffffffffffffffe,%rcx
+  400737:       48 39 cb                cmp    %rcx,%rbx
+  40073a:       49 8d 04 09             lea    (%r9,%rcx,1),%rax
+  40073e:       74 2f                   je     40076f <daxpy+0xdf>
+  400740:       f2 0f 10 0c c6          movsd  (%rsi,%rax,8),%xmm1
+  400745:       48 8d 0c c2             lea    (%rdx,%rax,8),%rcx
+  400749:       48 83 c0 01             add    $0x1,%rax
+  40074d:       48 39 c7                cmp    %rax,%rdi
+  400750:       f2 0f 59 c8             mulsd  %xmm0,%xmm1
+  400754:       f2 0f 58 09             addsd  (%rcx),%xmm1
+  400758:       f2 0f 11 09             movsd  %xmm1,(%rcx)
+  40075c:       76 11                   jbe    40076f <daxpy+0xdf>
